@@ -10,6 +10,7 @@ from arch.unitroot import VarianceRatio
 import warnings
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 import json
+import random
 
 warnings.filterwarnings("ignore", category=InterpolationWarning)
 
@@ -194,7 +195,54 @@ for currency in z_matrix.index:
 mean_reverting_pairs = [pair for pair, pval in currency_best_pairs.values()]
 trending_pairs = [pair for pair, pval in currency_best_trending.values()]
 
-# Create the figure
+# ========== NEW: CREATE STANDALONE CHART FOR DEBUGGING ==========
+print("\n" + "="*50)
+print("Creating standalone test chart...")
+
+# Pick a random pair
+random_pair = random.choice(list(ratios.keys()))
+print(f"Selected random pair: {random_pair[0]}/{random_pair[1]}")
+
+random_ratio = ratios[random_pair]['ratio_series']
+print(f"Ratio series length: {len(random_ratio)}")
+print(f"Date range: {random_ratio.index[0]} to {random_ratio.index[-1]}")
+print(f"Z-score: {ratios[random_pair]['z_score']:.3f}")
+
+# Create standalone figure
+standalone_fig = go.Figure()
+standalone_fig.add_trace(go.Scatter(
+    x=random_ratio.index,
+    y=random_ratio.values,
+    mode='lines',
+    name=f'{random_pair[0]}/{random_pair[1]} Ratio',
+    line=dict(color='blue', width=2)
+))
+
+# Add mean line
+recent_mean = random_ratio[-window:].mean()
+standalone_fig.add_hline(y=recent_mean, line_dash="dash", 
+                         line_color="red", 
+                         annotation_text=f"Mean (last {window} days)")
+
+standalone_fig.update_layout(
+    title=f"Test Chart: {random_pair[0]}/{random_pair[1]} Price Ratio",
+    xaxis_title="Date",
+    yaxis_title="Ratio",
+    height=600,
+    width=1200,
+    showlegend=True
+)
+
+# Save standalone chart
+standalone_html = standalone_fig.to_html()
+with open('test_standalone_chart.html', 'w') as f:
+    f.write(standalone_html)
+print("✓ Saved test_standalone_chart.html")
+print("="*50 + "\n")
+
+# ========== END STANDALONE CHART ==========
+
+# Create the main interactive figure
 fig = make_subplots(
     rows=1, cols=2,
     shared_yaxes=False,
@@ -224,7 +272,7 @@ default_pair = list(ratios.keys())[0]
 default_ratio = ratios[default_pair]['ratio_series']
 
 line = go.Scatter(
-    x=default_ratio.index.to_pydatetime(), 
+    x=default_ratio.index, 
     y=default_ratio.values, 
     mode='lines', 
     name=f'{default_pair[0]}/{default_pair[1]} Ratio'
@@ -276,15 +324,23 @@ fig.update_layout(
     shapes=shapes
 )
 
-# Prepare data for JavaScript
+# Prepare data for JavaScript - FIX NaN ISSUES
+print("Preparing JSON data...")
 ratios_json = {}
 for (x, y), data in ratios.items():
-    ratio_series = data['ratio_series']
+    ratio_series = data['ratio_series'].dropna()  # Remove NaN values
+    
+    # Convert to list and handle any remaining NaN
+    values_list = ratio_series.tolist()
+    values_list = [float(v) if not np.isnan(v) else None for v in values_list]
+    
     ratios_json[f"{x}|{y}"] = {
         'dates': ratio_series.index.strftime('%Y-%m-%d').tolist(),
-        'values': ratio_series.tolist(),
-        'z_score': data['z_score']
+        'values': values_list,
+        'z_score': float(data['z_score']) if not np.isnan(data['z_score']) else 0
     }
+
+print(f"Prepared {len(ratios_json)} ratio pairs for JSON")
 
 # Convert Plotly figure to JSON properly
 fig_json = json.loads(fig.to_json())
@@ -353,6 +409,18 @@ html_template = f"""
             border-style: dotted;
             border-width: 2px;
         }}
+        .debug-info {{
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            max-width: 300px;
+            display: none;
+        }}
     </style>
 </head>
 <body>
@@ -375,6 +443,7 @@ html_template = f"""
             </div>
         </div>
         <div id="chart"></div>
+        <div id="debug" class="debug-info"></div>
     </div>
 
     <script>
@@ -383,50 +452,95 @@ html_template = f"""
 
         const layout = {json.dumps(fig_json['layout'])};
         const data = {json.dumps(fig_json['data'])};
+        
+        console.log('Loaded ratios data:', Object.keys(ratiosData).length, 'pairs');
+        console.log('Sample keys:', Object.keys(ratiosData).slice(0, 5));
 
         Plotly.newPlot('chart', data, layout, {{responsive: true}});
 
         const chartDiv = document.getElementById('chart');
+        const debugDiv = document.getElementById('debug');
+        
+        // Show debug info on double-click
+        chartDiv.addEventListener('dblclick', () => {{
+            debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none';
+        }});
         
         chartDiv.on('plotly_click', function(eventData) {{
-            if (eventData.points[0].data.type === 'heatmap') {{
-                const xLabel = eventData.points[0].x;
-                const yLabel = eventData.points[0].y;
-                
-                let key = xLabel + '|' + yLabel;
-                let reverse = false;
-                
-                if (!ratiosData[key]) {{
-                    key = yLabel + '|' + xLabel;
-                    reverse = true;
-                }}
-                
-                if (ratiosData[key]) {{
-                    const pairData = ratiosData[key];
-                    let values = pairData.values;
+            try {{
+                if (eventData.points[0].data.type === 'heatmap') {{
+                    const xLabel = eventData.points[0].x;
+                    const yLabel = eventData.points[0].y;
                     
-                    const recentValues = values.slice(-window_size);
-                    const meanRecent = recentValues.reduce((a, b) => a + b, 0) / recentValues.length;
+                    console.log('Clicked:', xLabel, 'x', yLabel);
                     
-                    let titleSuffix = '';
-                    if (meanRecent < 1) {{
-                        values = values.map(v => 1 / v);
-                        titleSuffix = ' (inverted)';
+                    let key = xLabel + '|' + yLabel;
+                    let reverse = false;
+                    
+                    if (!ratiosData[key]) {{
+                        key = yLabel + '|' + xLabel;
+                        reverse = true;
+                        console.log('Using reversed key:', key);
                     }}
                     
-                    const update = {{
-                        x: [pairData.dates],
-                        y: [values],
-                        name: [`${{xLabel}}/${{yLabel}} Ratio${{titleSuffix}}`]
-                    }};
-                    
-                    Plotly.restyle('chart', update, [1]);
-                    
-                    layout.annotations[1].text = `Price Ratio ${{xLabel}}/${{yLabel}} Over Time${{titleSuffix}}`;
-                    Plotly.relayout('chart', {{'annotations': layout.annotations}});
+                    if (ratiosData[key]) {{
+                        const pairData = ratiosData[key];
+                        let values = pairData.values.filter(v => v !== null);
+                        
+                        console.log('Found data:', values.length, 'points');
+                        
+                        // Calculate mean from recent values
+                        const recentValues = values.slice(-window_size);
+                        const meanRecent = recentValues.reduce((a, b) => a + b, 0) / recentValues.length;
+                        
+                        console.log('Recent mean:', meanRecent);
+                        
+                        // Auto-invert if mean < 1
+                        let titleSuffix = '';
+                        if (meanRecent < 1) {{
+                            values = values.map(v => 1 / v);
+                            titleSuffix = ' (inverted)';
+                            console.log('Inverted ratio');
+                        }}
+                        
+                        const update = {{
+                            x: [pairData.dates],
+                            y: [values],
+                            name: [`${{xLabel}}/${{yLabel}} Ratio${{titleSuffix}}`]
+                        }};
+                        
+                        Plotly.restyle('chart', update, [1]);
+                        
+                        layout.annotations[1].text = `Price Ratio ${{xLabel}}/${{yLabel}} Over Time${{titleSuffix}}`;
+                        Plotly.relayout('chart', {{'annotations': layout.annotations}});
+                        
+                        // Update debug info
+                        debugDiv.innerHTML = `
+                            <strong>Last Click:</strong><br>
+                            Pair: ${{xLabel}}/${{yLabel}}<br>
+                            Key: ${{key}}<br>
+                            Points: ${{values.length}}<br>
+                            Mean: ${{meanRecent.toFixed(4)}}<br>
+                            Z-score: ${{pairData.z_score.toFixed(3)}}<br>
+                            Inverted: ${{titleSuffix ? 'Yes' : 'No'}}
+                        `;
+                        debugDiv.style.display = 'block';
+                        
+                        console.log('Chart updated successfully');
+                    }} else {{
+                        console.error('Key not found:', key);
+                        debugDiv.innerHTML = `<strong>Error:</strong><br>Key not found: ${{key}}`;
+                        debugDiv.style.display = 'block';
+                    }}
                 }}
+            }} catch(error) {{
+                console.error('Error in click handler:', error);
+                debugDiv.innerHTML = `<strong>Error:</strong><br>${{error.message}}`;
+                debugDiv.style.display = 'block';
             }}
         }});
+        
+        console.log('Chart initialized successfully');
     </script>
 </body>
 </html>
@@ -436,6 +550,16 @@ html_template = f"""
 with open('index.html', 'w') as f:
     f.write(html_template)
 
+print("\n" + "="*50)
 print("Dashboard generated successfully!")
 print(f"Last update: {datetime.datetime.now()}")
+print("Files created:")
+print("  - index.html (interactive dashboard)")
+print("  - test_standalone_chart.html (standalone test chart)")
+print("\nDebugging tips:")
+print("  - Open test_standalone_chart.html to verify basic Plotly functionality")
+print("  - Open index.html and double-click anywhere to toggle debug info")
+print("  - Check browser console (F12) for JavaScript errors")
+print("="*50)
+
 warnings.filterwarnings("default", category=InterpolationWarning)
