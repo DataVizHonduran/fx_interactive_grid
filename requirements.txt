@@ -1,0 +1,7 @@
+numpy
+pandas
+plotly
+pandas-datareader
+statsmodels
+arch
+kaleido
