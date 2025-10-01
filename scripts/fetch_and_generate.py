@@ -286,6 +286,9 @@ for (x, y), data in ratios.items():
         'z_score': data['z_score']
     }
 
+# Convert Plotly figure to JSON properly
+fig_json = json.loads(fig.to_json())
+
 # Generate HTML with interactivity
 html_template = f"""
 <!DOCTYPE html>
@@ -378,9 +381,8 @@ html_template = f"""
         const ratiosData = {json.dumps(ratios_json)};
         const window_size = {window};
 
-        const plotData = {fig.to_json()};
-        const layout = JSON.parse(plotData).layout;
-        const data = JSON.parse(plotData).data;
+        const layout = {json.dumps(fig_json['layout'])};
+        const data = {json.dumps(fig_json['data'])};
 
         Plotly.newPlot('chart', data, layout, {{responsive: true}});
 
